@@ -1,3 +1,5 @@
+_This README is for `sharedb@1.x`. For `sharedb@1.x-beta`, see [the 1.x-beta branch](https://github.com/share/sharedb/tree/1.x-beta). To upgrade, see [the upgrade guide](https://github.com/share/sharedb/wiki/Upgrading-to-sharedb@1.0.0-from-1.0.0-beta)._
+
 # ShareDB
 
   [![NPM Version](https://img.shields.io/npm/v/sharedb.svg)](https://npmjs.org/package/sharedb)
@@ -26,9 +28,25 @@ tracker](https://github.com/share/sharedb/issues).
 - Projections to select desired fields from documents and operations
 - Middleware for implementing access control and custom extensions
 - Ideal for use in browsers or on the server
-- Reconnection of document and query subscriptions
 - Offline change syncing upon reconnection
 - In-memory implementations of database and pub/sub for unit testing
+
+### Reconnection
+
+**TLDR**
+```javascript
+const WebSocket = require('reconnecting-websocket');
+var socket = new WebSocket('ws://' + window.location.host);
+var connection = new sharedb.Connection(socket);
+```
+
+The native Websocket object that you feed to ShareDB's `Connection` constructor **does not** handle reconnections.
+
+The easiest way is to give it a WebSocket object that does reconnect. There are plenty of example on the web. The most important thing is that the custom reconnecting websocket, must have the same API as the native rfc6455 version.
+
+In the "textarea" example we show this off using a Reconnecting Websocket implementation from [reconnecting-websocket](https://github.com/pladaria/reconnecting-websocket).
+
+
 
 ## Example apps
 
@@ -75,6 +93,10 @@ __Options__
 * `options.pubsub` _(instance of `ShareDB.PubSub`)_
   Notify other ShareDB processes when data changes
   through this pub/sub adapter. Defaults to `ShareDB.MemoryPubSub()`.
+* `options.milestoneDb` _(instance of ShareDB.MilestoneDB`)_
+  Store snapshots of documents at a specified interval of versions
+* `options.presence` _boolean_
+  Enable presence functionality. Off by default. Note that this feature is not optimized for large numbers of clients and could cause fan-out issues
 
 #### Database Adapters
 * `ShareDB.MemoryDB`, backed by a non-persistent database with no queries
@@ -93,10 +115,14 @@ __Options__
 Community Provided Pub/Sub Adapters
 * [wsbus](https://github.com/dmapper/sharedb-wsbus-pubsub)
 
+#### Milestone Adapters
+
+* [`sharedb-milestone-mongo`](https://github.com/share/sharedb-milestone-mongo), backed by Mongo
+
 ### Listening to WebSocket connections
 
 ```js
-var WebSocketJSONStream = require('websocket-json-stream');
+var WebSocketJSONStream = require('@teamwork/websocket-json-stream');
 
 // 'ws' is a websocket server connection, as passed into
 // new (require('ws').Server).on('connection', ...)
@@ -123,26 +149,37 @@ Register a new middleware.
   One of:
   * `'connect'`: A new client connected to the server.
   * `'op'`: An operation was loaded from the database.
-  * `'doc'`: A snapshot was loaded from the database.
+  * `'readSnapshots'`: Snapshot(s) were loaded from the database for a fetch or subscribe of a query or document
   * `'query'`: A query is about to be sent to the database
-  * `'submit'`: An operation is about to be submited to the database
+  * `'submit'`: An operation is about to be submitted to the database
   * `'apply'`: An operation is about to be applied to a snapshot
     before being committed to the database
   * `'commit'`: An operation was applied to a snapshot; The operation
     and new snapshot are about to be written to the database.
-  * `'after submit'`: An operation was successfully submitted to
+  * `'afterWrite'`: An operation was successfully written to
     the database.
   * `'receive'`: Received a message from a client
-* `fn` _(Function(request, callback))_
+  * `'reply'`: About to send a non-error reply to a client message
+  * `'sendPresence'`: About to send presence information to a client
+* `fn` _(Function(context, callback))_
   Call this function at the time specified by `action`.
-  `request` contains a subset of the following properties, as relevant for the action:
-  * `action`: The action this middleware is handing
-  * `agent`: An object corresponding to the server agent handing this client
-  * `req`: The HTTP request being handled
-  * `collection`: The collection name being handled
-  * `id`: The document id being handled
-  * `query`: The query object being handled
-  * `op`: The op being handled
+  * `context` will always have the following properties:
+    * `action`: The action this middleware is handling
+    * `agent`: A reference to the server agent handling this client
+    * `backend`: A reference to this ShareDB backend instance
+  * `context` can also have additional properties, as relevant for the action:
+    * `collection`: The collection name being handled
+    * `id`: The document id being handled
+    * `op`: The op being handled
+    * `req`: HTTP request being handled, if provided to `share.listen` (for 'connect')
+    * `stream`: The duplex Stream provided to `share.listen` (for 'connect')
+    * `query`: The query object being handled (for 'query')
+    * `snapshots`: Array of retrieved snapshots (for 'readSnapshots')
+    * `rejectSnapshotRead(snapshot, error)`: Reject a specific snapshot read (for 'readSnapshots')
+      - `rejectSnapshotReadSilent(snapshot, errorMessage)`: As above, but causes the ShareDB client to treat it as a silent rejection, not passing the error back to user code.
+    * `data`: Received client message (for 'receive')
+    * `request`: Client message being replied to (for 'reply')
+    * `reply`: Reply to be sent to the client (for 'reply')
 
 ### Projections
 
@@ -164,6 +201,27 @@ share.addProjection('users_limited', 'users', { name:true, profileUrl:true });
 ```
 
 Note that only the [JSON0 OT type](https://github.com/ottypes/json0) is supported for projections.
+
+### Logging
+
+By default, ShareDB logs to `console`. This can be overridden if you wish to silence logs, or to log to your own logging driver or alert service.
+
+Methods can be overridden by passing a [`console`-like object](https://developer.mozilla.org/en-US/docs/Web/API/console) to `logger.setMethods`:
+
+```javascript
+var ShareDB = require('sharedb');
+ShareDB.logger.setMethods({
+  info: () => {},                         // Silence info
+  warn: () => alerts.warn(arguments),     // Forward warnings to alerting service
+  error: () => alerts.critical(arguments) // Remap errors to critical alerts
+});
+```
+
+ShareDB only supports the following logger methods:
+
+  - `info`
+  - `warn`
+  - `error`
 
 ### Shutdown
 
@@ -210,6 +268,62 @@ changes. Returns a [`ShareDB.Query`](#class-sharedbquery) instance.
 * `options.*`
   All other options are passed through to the database adapter.
 
+`connection.fetchSnapshot(collection, id, version, callback): void;`
+Get a read-only snapshot of a document at the requested version.
+
+* `collection` _(String)_
+  Collection name of the snapshot
+* `id` _(String)_
+  ID of the snapshot
+* `version` _(number) [optional]_
+  The version number of the desired snapshot. If `null`, the latest version is fetched.
+* `callback` _(Function)_
+  Called with `(error, snapshot)`, where `snapshot` takes the following form:
+
+  ```javascript
+  {
+    id: string;         // ID of the snapshot
+    v: number;          // version number of the snapshot
+    type: string;       // the OT type of the snapshot, or null if it doesn't exist or is deleted
+    data: any;          // the snapshot
+  }
+  ```
+
+`connection.fetchSnapshotByTimestamp(collection, id, timestamp, callback): void;`
+Get a read-only snapshot of a document at the requested version.
+
+* `collection` _(String)_
+  Collection name of the snapshot
+* `id` _(String)_
+  ID of the snapshot
+* `timestamp` _(number) [optional]_
+  The timestamp of the desired snapshot. The returned snapshot will be the latest snapshot before the provided timestamp. If `null`, the latest version is fetched.
+* `callback` _(Function)_
+  Called with `(error, snapshot)`, where `snapshot` takes the following form:
+
+  ```javascript
+  {
+    id: string;         // ID of the snapshot
+    v: number;          // version number of the snapshot
+    type: string;       // the OT type of the snapshot, or null if it doesn't exist or is deleted
+    data: any;          // the snapshot
+  }
+  ```
+
+`connection.getPresence(channel): Presence;`
+Get a [`Presence`](#class-sharedbpresence) instance that can be used to subscribe to presence information to other clients, and create instances of local presence.
+
+* `channel` _(String)_
+  Presence channel to subscribe to
+
+`connection.getDocPresence(collection, id): DocPresence;`
+Get a special [`DocPresence`](#class-sharedbdocpresence) instance that can be used to subscribe to presence information to other clients, and create instances of local presence. This is tied to a `Doc`, and all presence will be automatically transformed against ops to keep presence current. Note that the `Doc` must be of a type that supports presence.
+
+* `collection` _(String)_
+  Document collection
+* `id` _(String)_
+  Document ID
+
 ### Class: `ShareDB.Doc`
 
 `doc.type` _(String_)
@@ -228,8 +342,11 @@ Populate the fields on `doc` with a snapshot of the document from the server.
 Populate the fields on `doc` with a snapshot of the document from the server, and
 fire events on subsequent changes.
 
+`doc.unsubscribe(function (err) {...})`
+Stop listening for document updates. The document data at the time of unsubscribing remains in memory, but no longer stays up-to-date. Resubscribe with `doc.subscribe`.
+
 `doc.ingestSnapshot(snapshot, callback)`
-Ingest snapshot data. This data must include a version, snapshot and type. This method is generally called interally as a result of fetch or subscribe and not directly. However, it may be called directly to pass data that was transferred to the client external to the client's ShareDB connection, such as snapshot data sent along with server rendering of a webpage.
+Ingest snapshot data. The `snapshot` param must include the fields `v` (doc version), `data`, and `type` (OT type). This method is generally called interally as a result of fetch or subscribe and not directly from user code. However, it may still be called directly from user code to pass data that was transferred to the client external to the client's ShareDB connection, such as snapshot data sent along with server rendering of a webpage.
 
 `doc.destroy()`
 Unsubscribe and stop firing events.
@@ -320,64 +437,430 @@ after a sequence of diffs are handled.
 `query.on('extra', function() {...}))`
 (Only fires on subscription queries) `query.extra` changed.
 
+### Class: `ShareDB.Backend`
 
-## Error codes
+`Backend` represents the server-side instance of ShareDB. It is primarily responsible for connecting to clients, and sending requests to the database adapters. It is also responsible for some configuration, such as setting up [middleware](#middlewares) and [projections](#projections).
 
-ShareDB returns errors as plain JavaScript objects with the format:
+#### `constructor`
+
+```javascript
+var Backend = require('sharedb');
+var backend = new Backend(options);
 ```
-{
-  code: 5000,
-  message: 'ShareDB internal error'
-}
+
+Constructs a new `Backend` instance, with the provided options:
+
+* `db` _DB (optional)_: an instance of a ShareDB [database adapter](#database-adapters) that provides the data store for ShareDB. If omitted, a new, non-persistent, in-memory adapter will be created, which should _not_ be used in production, but may be useful for testing
+* `pubsub` _PubSub (optional)_: an instance of a ShareDB [Pub/Sub adapter](#pubsub-adapters) that provides a channel for notifying other ShareDB instances of changes to data. If omitted, a new, in-memory adapter will be created. Unlike the database adapter, the in-memory instance _may_ be used in a production environment where pub/sub state need only persist across a single, stand-alone server
+* `milestoneDb` _MilestoneDB (optional)_: an instance of a ShareDB [milestone adapter](#milestone-adapters) that provides the data store for milestone snapshots, which are historical snapshots of documents stored at a specified version interval. If omitted, this functionality will not be enabled
+* `extraDbs` _Object (optional)_: an object whose values are extra `DB` instances which can be [queried](#class-sharedbquery). The keys are the names that can be passed into the query options `db` field
+* `suppressPublish` _boolean (optional)_: if set to `true`, any changes committed will _not_ be published on `pubsub`
+* `maxSubmitRetries` _number (optional)_: the number of times to allow a submit to be retried. If omitted, the request will retry an unlimited number of times
+
+#### `connect`
+
+```javascript
+var connection = backend.connect();
 ```
 
-Additional fields may be added to the error object for debugging context depending on the error. Common additional fields include `collection`, `id`, and `op`.
+Connects to ShareDB and returns an instance of a [`Connection`](#class-sharedbconnection). This is the server-side equivalent of `new ShareDBClient.Connection(socket)` in the browser.
 
-### 4000 - Bad request
+This method also supports infrequently used optional arguments:
 
-* 4001 - Unknown error type
-* 4002 - Database adapter does not support subscribe
-* 4003 - Database adapter not found
-* 4004 - Missing op
-* 4005 - Op must be an array
-* 4006 - Create data in op must be an object
-* 4007 - Create op missing type
-* 4008 - Unknown type
-* 4009 - del value must be true
-* 4010 - Missing op, create or del
-* 4011 - Invalid src
-* 4012 - Invalid seq
-* 4013 - Found seq but not src
-* 4014 - op.m invalid
-* 4015 - Document does not exist
-* 4016 - Document already exists
-* 4017 - Document was deleted
-* 4018 - Document was created remotely
-* 4019 - Invalid protocol version
-* 4020 - Invalid default type
-* 4021 - Invalid client id
-* 4022 - Database adapter does not support queries
-* 4023 - Cannot project snapshots of this type
+```javascript
+var connection = backend.connect(connection, req);
+```
 
-### 5000 - Internal error
+* `connection` _Connection (optional)_: a [`Connection`](#class-sharedbconnection) instance to bind to the `Backend`
+* `req` _Object (optional)_: a connection context object that can contain information such as cookies or session data that will be available in the [middleware](#middlewares)
 
-The `41xx` and `51xx` codes are reserved for use by ShareDB DB adapters, and the `42xx` and `52xx` codes are reserved for use by ShareDB PubSub adapters.
+Returns a [`Connection`](#class-sharedbconnection).
 
-* 5001 - No new ops returned when retrying unsuccessful submit
-* 5002 - Missing snapshot
-* 5003 - Snapshot and op version don't match
-* 5004 - Missing op
-* 5005 - Missing document
-* 5006 - Version mismatch
-* 5007 - Invalid state transition
-* 5008 - Missing version in snapshot
-* 5009 - Cannot ingest snapshot with null version
-* 5010 - No op to send
-* 5011 - Commit DB method unimplemented
-* 5012 - getSnapshot DB method unimplemented
-* 5013 - getOps DB method unimplemented
-* 5014 - queryPollDoc DB method unimplemented
-* 5015 - _subscribe PubSub method unimplemented
-* 5016 - _unsubscribe PubSub method unimplemented
-* 5017 - _publish PubSub method unimplemented
-* 5018 - Required QueryEmitter listener not assigned
+#### `listen`
+
+```javascript
+var agent = backend.listen(stream, req);
+```
+
+Registers a `Stream` with the backend. This should be called when the server receives a new connection from a client.
+
+* `stream` _Stream_: a [`Stream`](https://nodejs.org/api/stream.html) (or `Stream`-like object) that will be used to communicate between the new `Agent` and the `Backend`
+* `req` _Object (optional)_: a connection context object that can contain information such as cookies or session data that will be available in the [middleware](#middlewares)
+
+Returns an [`Agent`](#class-agent), which is also available in the [middleware](#middlewares).
+
+#### `close`
+
+```javascript
+backend.close(callback);
+```
+
+Disconnects ShareDB and all of its underlying services (database, pubsub, etc.).
+
+* `callback` _Function_: a callback with the signature `function (error: Error): void` that will be called once the services have stopped, or with an `error` if at least one of them could not be stopped
+
+#### `use`
+
+```javascript
+backend.use(action, middleware);
+```
+
+Adds [middleware](#middlewares) to the `Backend`.
+
+* `action` _string | string[]_: an action, or array of action names defining when to apply the middleware
+* `middleware` _Function_: a middleware function with the signature `function (context: Object, callback: Function): void;`. See [middleware](#middlewares) for more details
+
+Returns the `Backend` instance, which allows for multiple chained calls.
+
+#### `addProjection`
+
+```javascript
+backend.addProjection(name, collection, fields);
+```
+
+Adds a [projection](#projections).
+
+* `name` _string_: the name of the projection
+* `collection` _string_: the name of the collection on which to apply the projection
+* `fields` _Object_: a declaration of which fields to include in the projection, such as `{ field1: true }`. Defining sub-field projections is not supported.
+
+#### `submit`
+
+```javascript
+backend.submit(agent, index, id, op, options, callback);
+```
+
+Submits an operation to the `Backend`.
+
+* `agent` _[`Agent`](#class-agent)_: connection agent to pass to the middleware
+* `index` _string_: the name of the target collection or projection
+* `id` _string_: the document ID
+* `op` _Object_: the operation to submit
+* `options` _Object_: these options are passed through to the database adapter's `commit` method, so any options that are valid there can be used here
+* `callback` _Function_: a callback with the signature `function (error: Error, ops: Object[]): void;`, where `ops` are the ops committed by other clients between the submitted `op` being submitted and committed
+
+#### `getOps`
+
+```javascript
+backend.getOps(agent, index, id, from, to, options, callback);
+```
+
+Fetches the ops for a document between the requested version numbers, where the `from` value is inclusive, but the `to` value is non-inclusive.
+
+* `agent` _[`Agent`](#class-agent)_: connection agent to pass to the middleware
+* `index` _string_: the name of the target collection or projection
+* `id` _string_: the document ID
+* `from` _number_: the first op version to fetch. If set to `null`, then ops will be fetched from the earliest version
+* `to` _number_: The last op version. This version will _not_ be fetched (ie `to` is non-inclusive). If set to `null`, then ops will be fetched up to the latest version
+* `options`: _Object (optional)_: options can be passed directly to the database driver's `getOps` inside the `opsOptions` property: `{opsOptions: {metadata: true}}`
+* `callback`: _Function_: a callback with the signature `function (error: Error, ops: Object[]): void;`, where `ops` is an array of the requested ops
+
+#### `getOpsBulk`
+
+```javascript
+backend.getOpsBulk(agent, index, fromMap, toMap, options, callback);
+```
+
+Fetches the ops for multiple documents in a collection between the requested version numbers, where the `from` value is inclusive, but the `to` value is non-inclusive.
+
+* `agent` _[`Agent`](#class-agent)_: connection agent to pass to the middleware
+* `index` _string_: the name of the target collection or projection
+* `id` _string_: the document ID
+* `fromMap` _Object_: an object whose keys are the IDs of the target documents. The values are the first versions requested of each document. For example, `{abc: 3}` will fetch ops for document with ID `abc` from version `3` (inclusive)
+* `toMap` _Object_: an object whose keys are the IDs of the target documents. The values are the last versions requested of each document (non-inclusive). For example, `{abc: 3}` will fetch ops for document with ID `abc` up to version `3` (_not_ inclusive)
+* `options`: _Object (optional)_: options can be passed directly to the database driver's `getOpsBulk` inside the `opsOptions` property: `{opsOptions: {metadata: true}}`
+* `callback`: _Function_: a callback with the signature `function (error: Error, opsMap: Object): void;`, where `opsMap` is an object whose keys are the IDs of the requested documents, and their values are the arrays of requested ops, eg `{abc: []}`
+
+#### `fetch`
+
+```javascript
+backend.fetch(agent, index, id, options, callback);
+```
+
+Fetch the current snapshot of a document.
+
+* `agent` _[`Agent`](#class-agent)_: connection agent to pass to the middleware
+* `index` _string_: the name of the target collection or projection
+* `id` _string_: the document ID
+* `options`: _Object (optional)_: options can be passed directly to the database driver's `fetch` inside the `snapshotOptions` property: `{snapshotOptions: {metadata: true}}`
+* `callback`: _Function_: a callback with the signature `function (error: Error, snapshot: Snapshot): void;`, where `snapshot` is the requested snapshot
+
+#### `fetchBulk`
+
+```javascript
+backend.fetchBulk(agent, index, ids, options, callback);
+```
+
+Fetch multiple document snapshots from a collection.
+
+* `agent` _[`Agent`](#class-agent)_: connection agent to pass to the middleware
+* `index` _string_: the name of the target collection or projection
+* `ids` _string[]_: array of document IDs
+* `options`: _Object (optional)_: options can be passed directly to the database driver's `fetchBulk` inside the `snapshotOptions` property: `{snapshotOptions: {metadata: true}}`
+* `callback`: _Function_: a callback with the signature `function (error: Error, snapshotMap: Object): void;`, where `snapshotMap` is an object whose keys are the requested IDs, and the values are the requested `Snapshot`s
+
+#### `queryFetch`
+
+```javascript
+backend.queryFetch(agent, index, query, options, callback);
+```
+
+Fetch snapshots that match the provided query. In most cases, querying the backing database directly should be preferred, but `queryFetch` can be used in order to apply middleware, whilst avoiding the overheads associated with using a `Doc` instance.
+
+* `agent` _[`Agent`](#class-agent)_: connection agent to pass to the middleware
+* `index` _string_: the name of the target collection or projection
+* `query` _Object_: a query object, whose format will depend on the database adapter being used
+* `options` _Object_: an object that may contain a `db` property, which specifies which database to run the query against. These extra databases can be attached via the `extraDbs` option in the `Backend` constructor
+* `callback` _Function_: a callback with the signature `function (error: Error, snapshots: Snapshot[], extra: Object): void;`, where `snapshots` is an array of the snapshots matching the query, and `extra` is an (optional) object that the database adapter might return with more information about the results (such as counts)
+
+### Class: `ShareDB.Agent`
+
+An `Agent` is the representation of a client's `Connection` state on the server. If the `Connection` was created through `backend.connect` (ie the client is running on the server), then the `Agent` associated with a `Connection` can be accessed through a direct reference: `connection.agent`.
+
+The `Agent` will be made available in all [middleware](#middlewares) requests. The `agent.custom` field is an object that can be used for storing arbitrary information for use in middleware. For example:
+
+```javascript
+backend.use('connect', (request, callback) => {
+  // Best practice to clone to prevent mutating the object after connection.
+  // You may also want to consider a deep clone, depending on the shape of request.req.
+  Object.assign(request.agent.custom, request.req);
+  callback();
+});
+
+backend.use('readSnapshots', (request, callback) => {
+  const connectionInfo = request.agent.custom;
+  const snapshots = request.snapshots;
+
+  // Use the information provided at connection to determine if a user can access the snapshots.
+  // This should also be checked when fetching and submitting ops.
+  if (!userCanAccessCollection(connectionInfo, request.collection)) {
+    return callback(new Error('Not allowed to access collection ' + request.collection));
+  }
+  // Check each snapshot individually.
+  for (const snapshot of snapshots) {
+    if (!userCanAccessSnapshot(connectionInfo, request.collection, snapshot)) {
+      request.rejectSnapshotRead(snapshot,
+        new Error('Not allowed to access snapshot in ' request.collection));
+    }
+  }
+
+  callback();
+});
+
+// Here you should determine what permissions a user has, probably by reading a cookie and
+// potentially making some database request to check which documents they can access, or which
+// roles they have, etc. If doing this asynchronously, make sure you call backend.connect
+// after the permissions have been fetched.
+const connectionInfo = getUserPermissions();
+// Pass info in as the second argument. This will be made available as request.req in the
+// 'connection' middleware.
+const connection = backend.connect(null, connectionInfo);
+```
+
+### Class: `ShareDB.Presence`
+
+Representation of the presence data associated with a given channel.
+
+#### `subscribe`
+
+```javascript
+presence.subscribe(callback): void;
+```
+
+Subscribe to presence updates from other clients. Note that presence can be submitted without subscribing, but remote clients will not be able to re-request presence from you if you are not subscribed.
+
+* `callback` _Function_: a callback with the signature `function (error: Error): void;`
+
+#### `unsubscribe`
+
+```javascript
+presence.unsubscribe(callback): void;
+```
+
+Unsubscribe from presence updates from remote clients.
+
+* `callback` _Function_: a callback with the signature `function (error: Error): void;`
+
+#### `on`
+
+```javascript
+presence.on('receive', callback): void;
+```
+
+An update from a remote presence client has been received.
+
+* `callback` _Function_: callback for handling the received presence: `function (presenceId, presenceValue): void;`
+
+```javascript
+presence.on('error', callback): void;
+```
+
+A presence-related error has occurred.
+
+* `callback` _Function_: a callback with the signature `function (error: Error): void;`
+
+#### `create`
+
+```javascript
+presence.create(presenceId): LocalPresence;
+```
+
+Create an instance of [`LocalPresence`](#class-sharedblocalpresence), which can be used to represent local presence. Many or none such local presences may exist on a `Presence` instance.
+
+* `presenceId` _string (optional)_: a unique ID representing the local presence. Remember - depending on use-case - the same client might have multiple presences, so this might not necessarily be a user or client ID. If one is not provided, a random ID will be assigned for you.
+
+#### `destroy`
+
+```javascript
+presence.destroy(callback);
+```
+
+Updates all remote clients with a `null` presence, and removes it from the `Connection` cache, so that it can be garbage-collected. This should be called when you are done with a presence, and no longer need to use it to fire updates.
+
+* `callback` _Function_: a callback with the signature `function (error: Error): void;`
+
+### Class: `ShareDB.DocPresence`
+
+Specialised case of [`Presence`](#class-sharedbpresence), which is tied to a specific [`Doc`](#class-sharedbdoc). When using presence with an associated `Doc`, any ops applied to the `Doc` will automatically be used to transform associated presence. On destroy, the `DocPresence` will unregister its listeners from the `Doc`.
+
+See [`Presence`](#class-sharedbpresence) for available methods.
+
+### Class: `ShareDB.LocalPresence`
+
+`LocalPresence` represents the presence of the local client in a given `Doc`. For example, this might be the position of a caret in a text document; which field has been highlighted in a complex JSON object; etc. Multiple presences may exist per `Doc` even on the same client.
+
+#### `submit`
+
+```javascript
+localPresence.submit(presence, callback): void;
+```
+
+Update the local representation of presence, and broadcast that presence to any other document presence subscribers.
+
+* `presence` _Object_: the presence object to broadcast. The structure of this will depend on the OT type
+* `callback` _Function_: a callback with the signature `function (error: Error): void;`
+
+#### `send`
+
+```javascript
+localPresence.send(callback): void;
+```
+
+Send presence like `submit`, but without updating the value. Can be useful if local presences expire periodically.
+
+* `callback` _Function_: a callback with the signature `function (error: Error): void;`
+
+#### `destroy`
+
+```javascript
+localPresence.destroy(callback): void;
+```
+
+Informs all remote clients that this presence is now `null`, and deletes itself for garbage collection.
+
+* `callback` _Function_: a callback with the signature `function (error: Error): void;`
+
+### Logging
+
+By default, ShareDB logs to `console`. This can be overridden if you wish to silence logs, or to log to your own logging driver or alert service.
+
+Methods can be overridden by passing a [`console`-like object](https://developer.mozilla.org/en-US/docs/Web/API/console) to `logger.setMethods`
+
+```javascript
+var ShareDB = require('sharedb/lib/client');
+ShareDB.logger.setMethods({
+  info: () => {},                         // Silence info
+  warn: () => alerts.warn(arguments),     // Forward warnings to alerting service
+  error: () => alerts.critical(arguments) // Remap errors to critical alerts
+});
+```
+
+ShareDB only supports the following logger methods:
+
+  - `info`
+  - `warn`
+  - `error`
+
+
+## Errors
+
+ShareDB returns errors as an instance of `ShareDBError`, with a machine-parsable `code`, as well as more details in the human-readable `message`.
+
+### Common error codes
+
+#### `ERR_OP_SUBMIT_REJECTED`
+
+The op submitted by the client has been rejected by the server for a non-critical reason.
+
+When the client receives this code, it will attempt to roll back the rejected op, leaving the client in a usable state.
+
+This error might be used as part of standard control flow. For example, consumers may define a middleware that validates document structure, and rejects operations that do not conform to this schema using this error code to reset the client to a valid state.
+
+#### `ERR_OP_ALREADY_SUBMITTED`
+
+The same op has been received by the server twice.
+
+This is non-critical, and part of normal control flow, and is sent as an error in order to short-circuit the op processing. It is eventually swallowed by the server, and shouldn't need further handling.
+
+#### `ERR_SUBMIT_TRANSFORM_OPS_NOT_FOUND`
+
+The ops needed to transform the submitted op up to the current version of the snapshot could not be found.
+
+If a client on an old version of a document submits an op, that op needs to be transformed by all the ops that have been applied to the document in the meantime. If the server cannot fetch these ops from the database, then this error is returned.
+
+The most common case of this would be ops being deleted from the database. For example, let's assume we have a TTL set up on the ops in our database. Let's also say we have a client that is so old that the op corresponding to its version has been deleted by the TTL policy. If this client then attempts to submit an op, the server will not be able to find the ops required to transform the op to apply to the current version of the snapshot.
+
+Other causes of this error may be dropping the ops collection all together, or having the database corrupted in some other way.
+
+#### `ERR_MAX_SUBMIT_RETRIES_EXCEEDED`
+
+The number of retries defined by the `maxSubmitRetries` option has been exceeded by a submission.
+
+#### `ERR_DOC_ALREADY_CREATED`
+
+The creation request has failed, because the document was already created by another client.
+
+This can happen when two clients happen to simultaneously try to create the same document, and is potentially recoverable by simply fetching the already-created document.
+
+#### `ERR_DOC_WAS_DELETED`
+
+The deletion request has failed, because the document was already deleted by another client.
+
+This can happen when two clients happen to simultaneously try to delete the same document. Given that the end result is the same, this error can potentially just be ignored.
+
+#### `ERR_DOC_TYPE_NOT_RECOGNIZED`
+
+The specified document type has not been registered with ShareDB.
+
+This error can usually be remedied by remembering to register any types you need:
+
+```javascript
+var ShareDB = require('sharedb');
+var richText = require('rich-text');
+
+ShareDB.types.register(richText.type);
+```
+
+#### `ERR_DEFAULT_TYPE_MISMATCH`
+
+The default type being used by the client does not match the default type expected by the server.
+
+This will typically only happen when using a different default type to the built-in `json0` used by ShareDB by default (eg if using a fork). The exact same type must be used by both the client and the server, and should be registered as the default type:
+
+```javascript
+var ShareDB = require('sharedb');
+var forkedJson0 = require('forked-json0');
+
+// Make sure to also do this on your client
+ShareDB.types.defaultType = forkedJson0.type;
+```
+
+#### `ERR_OP_NOT_ALLOWED_IN_PROJECTION`
+
+The submitted op is not valid when applied to the projection.
+
+This may happen if the op targets some property that is not included in the projection.
+
+#### `ERR_TYPE_CANNOT_BE_PROJECTED`
+
+The document's type cannot be projected. `json0` is currently the only type that supports projections.

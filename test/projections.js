@@ -1,9 +1,8 @@
-var expect = require('expect.js');
+var expect = require('chai').expect;
 var projections = require('../lib/projections');
 var type = require('../lib/types').defaultType.uri;
 
 describe('projection utility methods', function() {
-
   describe('projectSnapshot', function() {
     function test(fields, snapshot, expected) {
       projections.projectSnapshot(fields, snapshot);
@@ -13,7 +12,7 @@ describe('projection utility methods', function() {
     it('throws on snapshots with the wrong type', function() {
       expect(function() {
         projections.projectSnapshot({}, {type: 'other', data: 123});
-      }).throwException();
+      }).throw(Error);
     });
 
     it('empty object filters out all properties', function() {
@@ -91,8 +90,8 @@ describe('projection utility methods', function() {
       );
       test(
         {x: true},
-        {type: type, data: {x: [1,2,3]}},
-        {type: type, data: {x: [1,2,3]}}
+        {type: type, data: {x: [1, 2, 3]}},
+        {type: type, data: {x: [1, 2, 3]}}
       );
       test(
         {x: true},
@@ -186,23 +185,23 @@ describe('projection utility methods', function() {
       it('filters root ops', function() {
         test(
           {},
-          {op: [{p: [], od: {a:1, x: 2}, oi: {x: 3}}]},
+          {op: [{p: [], od: {a: 1, x: 2}, oi: {x: 3}}]},
           {op: [{p: [], od: {}, oi: {}}]}
         );
         test(
           {x: true},
-          {op: [{p: [], od: {a:1, x: 2}, oi: {x: 3}}]},
+          {op: [{p: [], od: {a: 1, x: 2}, oi: {x: 3}}]},
           {op: [{p: [], od: {x: 2}, oi: {x: 3}}]}
         );
         test(
           {x: true},
-          {op: [{p: [], od: {a:1, x: 2}, oi: {z:3}}]},
+          {op: [{p: [], od: {a: 1, x: 2}, oi: {z: 3}}]},
           {op: [{p: [], od: {x: 2}, oi: {}}]}
         );
         test(
-          {x: true, a:true, z:true},
-          {op: [{p: [], od: {a:1, x: 2}, oi: {z:3}}]},
-          {op: [{p: [], od: {a:1, x: 2}, oi: {z:3}}]}
+          {x: true, a: true, z: true},
+          {op: [{p: [], od: {a: 1, x: 2}, oi: {z: 3}}]},
+          {op: [{p: [], od: {a: 1, x: 2}, oi: {z: 3}}]}
         );
         test(
           {x: true},
@@ -212,7 +211,7 @@ describe('projection utility methods', function() {
         // If you make the document something other than an object, it just looks like null.
         test(
           {x: true},
-          {op: [{p: [], od: {a:2, x: 5}, oi: []}]},
+          {op: [{p: [], od: {a: 2, x: 5}, oi: []}]},
           {op: [{p: [], od: {x: 5}, oi: null}]}
         );
       });
@@ -245,7 +244,7 @@ describe('projection utility methods', function() {
       it('throws on create ops with the wrong type', function() {
         expect(function() {
           projections.projectOp({}, {create: {type: 'other', data: 123}});
-        }).throwException();
+        }).throw(Error);
       });
 
       it('strips data in creates', function() {
@@ -359,7 +358,7 @@ describe('projection utility methods', function() {
         {},
         {del: true}
       );
-      expect(projections.isOpAllowed(null, {}, {del:true})).equal(true);
+      expect(projections.isOpAllowed(null, {}, {del: true})).equal(true);
     });
 
     it('works with ops', function() {
