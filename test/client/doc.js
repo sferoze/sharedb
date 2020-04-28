@@ -1,6 +1,6 @@
 var Backend = require('../../lib/backend');
 var expect = require('chai').expect;
-var util = require('../util');
+var async = require('async');
 
 describe('Doc', function() {
   beforeEach(function() {
@@ -47,6 +47,17 @@ describe('Doc', function() {
   it('doc.destroy() works without a callback', function() {
     var doc = this.connection.get('dogs', 'fido');
     doc.destroy();
+  });
+
+  it('errors when trying to set a very large seq', function(done) {
+    var connection = this.connection;
+    connection.seq = Number.MAX_SAFE_INTEGER;
+    var doc = connection.get('dogs', 'fido');
+    doc.create({name: 'fido'});
+    doc.once('error', function(error) {
+      expect(error.code).to.equal('ERR_CONNECTION_SEQ_INTEGER_OVERFLOW');
+      done();
+    });
   });
 
   describe('when connection closed', function() {
@@ -319,26 +330,24 @@ describe('Doc', function() {
     });
 
     it('rolls the doc back to a usable state', function(done) {
-      util.callInSeries([
+      async.series([
         function(next) {
           doc.submitOp(invalidOp, function(error) {
-            expect(error).instanceOf(Error);
+            expect(error).to.be.instanceOf(Error);
             next();
           });
         },
-        function(next) {
-          doc.whenNothingPending(next);
-        },
+        doc.whenNothingPending.bind(doc),
         function(next) {
           expect(doc.data).to.eql({name: 'Scooby'});
-          doc.submitOp(validOp, next);
+          next();
         },
+        doc.submitOp.bind(doc, validOp),
         function(next) {
           expect(doc.data).to.eql({name: 'Scooby', snacks: true});
           next();
-        },
-        done
-      ]);
+        }
+      ], done);
     });
 
     it('rescues an irreversible op collision', function(done) {
@@ -366,29 +375,18 @@ describe('Doc', function() {
         }
       });
 
-      util.callInSeries([
-        function(next) {
-          doc1.create({colours: ['white']}, next);
-        },
-        function(next) {
-          doc1.whenNothingPending(next);
-        },
-        function(next) {
-          doc2.fetch(next);
-        },
-        function(next) {
-          doc2.whenNothingPending(next);
-        },
+      async.series([
+        doc1.create.bind(doc1, {colours: ['white']}),
+        doc1.whenNothingPending.bind(doc1),
+        doc2.fetch.bind(doc2),
+        doc2.whenNothingPending.bind(doc2),
         // Both documents start off at the same v1 state, with colours as a list
         function(next) {
           expect(doc1.data).to.eql({colours: ['white']});
           expect(doc2.data).to.eql({colours: ['white']});
           next();
         },
-        // doc1 successfully submits an op which changes our list into a string in v2
-        function(next) {
-          doc1.submitOp({p: ['colours'], oi: 'white,black'}, next);
-        },
+        doc1.submitOp.bind(doc1, {p: ['colours'], oi: 'white,black'}),
         // This next step is a little fiddly. We abuse the middleware to pause the op submission and
         // ensure that we get this repeatable sequence of events:
         // 1. doc2 is still on v1, where 'colours' is a list (but it's a string in v2)
@@ -416,9 +414,8 @@ describe('Doc', function() {
           expect(doc1.data).to.eql({colours: 'white,black'});
           expect(doc2.data).to.eql(doc1.data);
           doc2.submitOp({p: ['colours'], oi: 'white,black,red'}, next);
-        },
-        done
-      ]);
+        }
+      ], done);
     });
   });
 });
