@@ -3,7 +3,7 @@ _This README is for `sharedb@1.x`. For `sharedb@1.x-beta`, see [the 1.x-beta bra
 # ShareDB
 
   [![NPM Version](https://img.shields.io/npm/v/sharedb.svg)](https://npmjs.org/package/sharedb)
-  [![Build Status](https://travis-ci.org/share/sharedb.svg?branch=master)](https://travis-ci.org/share/sharedb)
+  ![Test](https://github.com/share/sharedb/workflows/Test/badge.svg)
   [![Coverage Status](https://coveralls.io/repos/github/share/sharedb/badge.svg?branch=master)](https://coveralls.io/github/share/sharedb?branch=master)
 
 ShareDB is a realtime database backend based on [Operational Transformation
@@ -364,6 +364,12 @@ An operation is about to be applied to the data. `source` will be `false` for op
 `doc.on('op', function(op, source) {...})`
 An operation was applied to the data. `source` will be `false` for ops received from the server and defaults to `true` for ops generated locally.
 
+`doc.on('before op batch'), function(op, source) {...})`
+A potentially multi-part operation is about to be applied to the data. `source` will be `false` for ops received from the server and defaults to `true` for ops generated locally.
+
+`doc.on('op batch'), function(op, source) {...})`
+A potentially multi-part operation was applied to the data. `source` will be `false` for ops received from the server and defaults to `true` for ops generated locally.
+
 `doc.on('del', function(data, source) {...})`
 The document was deleted. Document contents before deletion are passed in as an argument. `source` will be `false` for ops received from the server and defaults to `true` for ops generated locally.
 
@@ -399,6 +405,12 @@ Invokes the given callback function after
  * all pending fetch, subscribe, and unsubscribe requests have been resolved.
 
 Note that `whenNothingPending` does NOT wait for pending `model.query()` calls.
+
+`doc.pause()`
+Prevents own ops being submitted to the server. If subscribed, remote ops will still be received.
+
+`doc.resume()`
+Resume sending own ops to the server if paused. Will flush the queued ops when called.
 
 ### Class: `ShareDB.Query`
 
