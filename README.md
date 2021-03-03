@@ -391,7 +391,7 @@ Apply operation to document and send it to the server.
 `op` structure depends on the document type. See the
 [operations for the default `'ot-json0'` type](https://github.com/ottypes/json0#summary-of-operations).
 Call this after you've either fetched or subscribed to the document.
-* `options.source` Argument passed to the `'op'` event locally. This is not sent to the server or other clients. Defaults to `true`.
+* `options.source` Argument passed to the `'op'` event locally. This is not sent to other clients. Defaults to `true`. If `doc.submitSource` is `true`, then this will be sent to the server and made available in middleware at `request.extra.source`
 
 `doc.del([options][, function(err) {...}])`
 Delete the document locally and send delete operation to the server.
@@ -411,6 +411,9 @@ Prevents own ops being submitted to the server. If subscribed, remote ops will s
 
 `doc.resume()`
 Resume sending own ops to the server if paused. Will flush the queued ops when called.
+
+`doc.submitSource` (default: `false`)
+If set to `true`, an op's `source` will be submitted to the server, and made available to access in middleware at `request.extra.source`. Note that a necessary side-effect of this is that ops that have different values for `source` will not be composed.
 
 ### Class: `ShareDB.Query`
 
@@ -624,6 +627,16 @@ Fetch snapshots that match the provided query. In most cases, querying the backi
 * `query` _Object_: a query object, whose format will depend on the database adapter being used
 * `options` _Object_: an object that may contain a `db` property, which specifies which database to run the query against. These extra databases can be attached via the `extraDbs` option in the `Backend` constructor
 * `callback` _Function_: a callback with the signature `function (error: Error, snapshots: Snapshot[], extra: Object): void;`, where `snapshots` is an array of the snapshots matching the query, and `extra` is an (optional) object that the database adapter might return with more information about the results (such as counts)
+
+#### `on`
+
+```javascript
+backend.on('submitRequestEnd', callback): void;
+```
+
+A submit request is about to return to the client. This is called whether the request was a success or a failure.
+
+* `callback` _Function_: callback for handling the event: `function (error, request): void;`
 
 ### Class: `ShareDB.Agent`
 
